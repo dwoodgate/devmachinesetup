@@ -26,11 +26,11 @@ Param
 
     [Parameter(Mandatory=$False)]
     [ValidateSet("2013", "2015", "2017")]
-    $vsVersion = "2017",
+    $vsVersion = "2015",
 
     [Parameter(Mandatory=$False)]
     [ValidateSet("Community", "Professional", "Enterprise")]
-    $vsEdition = "Community",
+    $vsEdition = "Professional",
 
     [Switch]
     $vsext,
@@ -46,6 +46,9 @@ Param
 
     [Parameter(Mandatory=$False)]
     $codeBaseDir = "C:\Code"
+	
+	[Parameter(Mandatory=$False)]
+    $stagePath = $env:USERPROFILE\.install_windows_machine.stage
 )
 
 
@@ -63,33 +66,6 @@ if( $dev -and $installVs )
 }
 
 #
-# [prepOS] Installing Operating System Components as well as chocolatey itself. Needs to happen before ANY other runs!
-#
-if( $prepOS ) 
-{
-    Set-ExecutionPolicy unrestricted
-
-    Invoke-Expression ((new-object net.webclient).DownloadString('https://chocolatey.org/install.ps1'))
-
-    Enable-WindowsOptionalFeature -FeatureName NetFx3 -Online -NoRestart
-    Enable-WindowsOptionalFeature -FeatureName WCF-Services45 -Online -NoRestart
-    Enable-WindowsOptionalFeature -FeatureName WCF-TCP-PortSharing45 -Online -NoRestart
-    Enable-WindowsOptionalFeature -FeatureName NetFx4-AdvSrvs -Online -NoRestart
-    Enable-WindowsOptionalFeature -FeatureName NetFx4Extended-ASPNET45 -Online -NoRestart
-    Enable-WindowsOptionalFeature -FeatureName Windows-Identity-Foundation -Online -NoRestart
-    Enable-WindowsOptionalFeature -FeatureName Microsoft-Hyper-V-All -Online -NoRestart
-    Enable-WindowsOptionalFeature -FeatureName Containers -Online -NoRestart
-    Enable-WindowsOptionalFeature -FeatureName Microsoft-Windows-Subsystem-Linux -Online -NoRestart
-
-    Write-Information ""
-    Write-Information "Installation of OS components completed, please restart your computer once ready!"
-    Write-Information ""
-
-    Exit
-}
-
-
-#
 # Function to create a path if it does not exist
 #
 function CreatePathIfNotExists($pathName) {
@@ -98,11 +74,103 @@ function CreatePathIfNotExists($pathName) {
     }
 }
 
+function GetStage() {
+    if(!(Test-Path -Path $stagePath)) {
+        Write-Output "Stage0" > $stagePath
+	} 
+	Get-Content $stagePath
+}
+
+function Mount-Iso([string] $isoPath)
+{
+	if ( -not (Test-Path $isoPath)) { throw "$isoPath does not exist" }
+	
+	if ($(Test-Windows8orGreater)) {
+		Write-Host "Mounting $isoPath using powershell"
+		Mount-DiskImage -ImagePath $isoPath
+		$driveLetter = (Get-DiskImage $isoPath | Get-Volume).DriveLetter
+		return ($driveLetter + ":\")
+	}
+	else {
+		$driveLetter = ls function:[i-z]: -n | ?{ !(test-path $_) } | random
+		Write-Host "Mounting $isoPath using ImDisk"
+		(& "imdisk" -a -f $isoPath -m $driveLetter) | out-null
+		return ($driveLetter + "\")
+	}
+}
+
+function Dismount-Iso([string] $driveLetter)
+{
+	start-sleep -s 5
+
+	if ($(Test-Windows8orGreater)) {
+		Write-Host "Unmounting $driveLetter using powershell"
+		Get-Volume ($driveLetter.Replace(":\","")) | Get-DiskImage | Dismount-DiskImage
+	}
+	else {
+		Write-Host "Unmounting $driveLetter using ImDisk"
+		(& "imdisk" -D -m ($driveLetter.Replace("\",""))) | out-null
+	}
+}
+
+
+function Test-Windows8orGreater
+{
+	$osVersion = [Environment]::OSVersion.Version
+	return $osVersion -ge (new-object 'Version' 6,2)
+}
+
+function Test-ImDisk
+{
+	if ( -not (Get-Command ImDisk)) { throw "ImDisk does not exist" }
+}
+
+
+#
+# [prepOS] Installing Operating System Components as well as chocolatey itself. Needs to happen before ANY other runs!
+#
+$stage = GetStage
+if( $stage = "stage0" ) 
+{
+    Set-ExecutionPolicy unrestricted
+
+    Invoke-Expression ((new-object net.webclient).DownloadString('https://chocolatey.org/install.ps1'))
+	
+	
+	if (-not $(Test-Windows8orGreater)) {
+		Write-Host "Checking imdisk installed"
+		choco install -y imdisk
+		Test-ImDisk
+	}
+	
+	if (-not $(Test-Windows8orGreater)) {
+	  dism /online /enable-feature /featurename:IIS-WebServerRole /featurename:NetFx3 /featurename:WCF-HTTP-Activation  /featurename:IIS-WebServer /featurename:IIS-Metabase /featurename:IIS-ManagementConsole /featurename:IIS-ManagementService /featurename:IIS-ManagementScriptingTools /featurename:IIS-ApplicationDevelopment /featurename:IIS-NetFxExtensibility /featurename:IIS-ASP /featurename:IIS-ASPNET /featurename:IIS-ISAPIExtensions /featurename:IIS-ISAPIFilter /featurename:IIS-ServerSideIncludes /featurename:IIS-CommonHttpFeatures /featurename:IIS-DefaultDocument /featurename:IIS-DirectoryBrowsing /featurename:IIS-HttpErrors /featurename:IIS-HttpRedirect /featurename:IIS-StaticContent /featurename:IIS-HealthAndDiagnostics /featurename:IIS-HttpLogging /featurename:IIS-RequestMonitor /featurename:IIS-Performance /featurename:IIS-HttpCompressionDynamic /featurename:IIS-HttpCompressionStatic /featurename:IIS-Security /featurename:IIS-BasicAuthentication /featurename:IIS-RequestFiltering /featurename:IIS-WindowsAuthentication
+	}
+	else {
+     Enable-WindowsOptionalFeature -FeatureName NetFx3 -Online -All -NoRestart
+     Enable-WindowsOptionalFeature -FeatureName WCF-Services45 -Online -All -NoRestart
+     Enable-WindowsOptionalFeature -FeatureName WCF-TCP-PortSharing45  -All -Online -NoRestart
+     Enable-WindowsOptionalFeature -FeatureName NetFx4-AdvSrvs -Online -All -NoRestart
+     Enable-WindowsOptionalFeature -FeatureName NetFx4Extended-ASPNET45 -All -Online -NoRestart
+	 Enable-WindowsOptionalFeature -FeatureName IIS-WebServerRole -Online -NoRestart -All
+	 Enable-WindowsOptionalFeature -FeatureName IIS-ASPNET -Online -All -NoRestart 
+	 Enable-WindowsOptionalFeature -FeatureName IIS-ASPNET45 -Online -NoRestart -All
+	 Enable-WindowsOptionalFeature -FeatureName IIS-RequestMonitor -Online -NoRestart -All
+	 Enable-WindowsOptionalFeature -FeatureName IIS-BasicAuthentication -Online -NoRestart -All
+	 Enable-WindowsOptionalFeature -FeatureName IIS-WindowsAuthentication -Online -NoRestart -All
+	 Enable-WindowsOptionalFeature -FeatureName IIS-WebSockets -Online -NoRestart -All
+	}
+	
+
+    Exit
+}
+
+
 #
 # Function to install VSIX extensions
 #
-$vsixInstallerCommand2013 = "C:\Program Files (x86)\Microsoft Visual Studio 12.0\Common7\IDE\VsixInstaller.exe"
-$vsixInstallerCommand2015 = "C:\Program Files (x86)\Microsoft Visual Studio 14.0\Common7\IDE\VSIXInstaller.exe"
+$vsixInstallerCommand2013 = "$($env:VS120COMNTOOLS)..\IDE\VsixInstaller.exe"
+$vsixInstallerCommand2015 = "$($env:VS140COMNTOOLS)..\IDE\VSIXInstaller.exe"
 $vsixInstallerCommand2017 = "C:\Program Files (x86)\Microsoft Visual Studio\2017\$vsEdition\Common7\IDE\VsixInstaller.exe"
 $vsixInstallerCommandGeneralArgs = " /q /a "
 
@@ -150,10 +218,31 @@ if( $tools ) {
 
     choco install -y googlechrome
 
-    choco install -y firefox -installArgs l=en-US
+    choco install -y firefox
+	
+	choco install -y notepadplusplus
 
-    choco install -y jre8
+    choco install -y curl
 
+    choco install -y --allowemptychecksum winmerge 
+
+#    choco install -y wireshark 
+
+    choco install -y  --allowemptychecksum putty
+
+    choco install -y sysinternals
+
+#    choco install -y  --allowemptychecksum winscp
+
+    choco install -y  --allowemptychecksum jq
+
+#    choco install -y  --allowemptychecksum OpenSSL.Light
+
+#    choco install -y  --allowemptychecksum royalts
+    
+#    choco install -y  --allowemptychecksum vcxsrv
+
+    choco install -y filezilla 
 }
 
 
@@ -162,15 +251,17 @@ if( $tools ) {
 #
 if( $userTools ) {
 
-    choco install -y whatsapp 
+#    choco install -y whatsapp 
 
-    choco install -y slack
+#    choco install -y slack
 
-    choco install -y microsoft-teams
+	choco install -y skype
+
+#    choco install -y microsoft-teams
 
     choco install -y  --allowemptychecksum vlc
 
-    choco install -y --ignorechecksum goodsync
+#    choco install -y --ignorechecksum goodsync
     
 }
 
@@ -180,30 +271,29 @@ if( $userTools ) {
 #
 if( $ittools )
 {
-
-    choco install -y vim 
-
-    choco install -y curl
+ 
+     choco install -y curl
 
     choco install -y --allowemptychecksum winmerge 
 
-    choco install -y wireshark 
+#    choco install -y wireshark 
 
     choco install -y  --allowemptychecksum putty
 
     choco install -y sysinternals
 
-    choco install -y  --allowemptychecksum winscp
+#    choco install -y  --allowemptychecksum winscp
 
     choco install -y  --allowemptychecksum jq
 
-    choco install -y  --allowemptychecksum OpenSSL.Light
+#    choco install -y  --allowemptychecksum OpenSSL.Light
 
-    choco install -y  --allowemptychecksum royalts
+#    choco install -y  --allowemptychecksum royalts
     
-    choco install -y  --allowemptychecksum vcxsrv
+#    choco install -y  --allowemptychecksum vcxsrv
 
     choco install -y filezilla 
+
 
 }
 
@@ -214,11 +304,17 @@ if( $ittools )
 # [installVs] Installing a version of Visual Studio (based on Chocolatey)
 #
 if($installVs) {
-    if($vsVersion -eq "2013") {
-        choco install -y visualstudiocommunity2013 
-    } 
+	choco install -y imdisk
+
     elseif($vsVersion -eq "2015") {
-        choco install -y visualstudio2015community -version 14.0.23107.0
+		#$iso = Mount-iso "\\qatower01\software\SW_DVD9_NTRL_Visual_Studio_Pro_2015_English_FPP_VL_MLF_X20-29901.ISO"
+		
+		$env:visualStudio:setupFolder = "d:\"
+		
+        choco install -y visualstudio2015Professional
+		
+		#Dismount-Iso $iso
+		
     } 
     elseif($vsVersion -eq "2017") {
         switch ($vsEdition) {
@@ -235,37 +331,6 @@ if($installVs) {
     }
 }
 
-
-#
-# Installing other IDEs, mainly Java-based
-#
-if($installOtherIDE) {
-    
-    choco install -y intellijidea-community
-
-    ## not working ## choco install -y springtoolsuite
-
-    # 
-    # NOTE: below is not needed, anymore, since Chocolatey has STS in the package gallery, now
-    #
-    # Extract Spring Tool Suite Eclipse and copy to standard working directory
-    #
-    Write-Host ""
-    Write-Host "Installing Spring Tool Suite..." -ForegroundColor Green
-    $stsZipPath = ($PWD.Path + "\spring-tool-suite-3.6.2.RELEASE-e4.4.1-win32-x86_64.zip")
-    if(!(Test-Path -Path $stsZipPath)) {
-        Invoke-WebRequest "http://dist.springsource.com/release/STS/3.8.0.RELEASE/dist/e4.6/spring-tool-suite-3.8.0.RELEASE-e4.6-win32-x86_64.zip" `
-                          -OutFile $stsZipPath
-    }
-    $shell = New-Object -ComObject Shell.Application
-    $stsZipFile = $shell.NameSpace($stsZipPath)
-    CreatePathIfNotExists("C:\tools\sts")
-    foreach($item in $stsZipFile.items()) {
-        $shell.Namespace("C:\tools\sts").CopyHere($item)
-    }
-}
-
-
 #
 # [dev] Developer Tools needed on every dev-machine
 #
@@ -274,28 +339,26 @@ if( $dev )
     #
     # Phase #1 will install the the basic tools and runtimes
     #
-
+	
+	#    choco install -y vim 
+	
     choco install -y visualstudiocode
 
-    choco install -y golang
-
-    choco install -y jdk8
+	choco install -y reportviewer2012
+	
+	choco install -y reportviewer2010sp1
 
     choco install -y nodejs.install
-
-    choco install -y python 
-
-    choco install -y php 
 
     choco install -y --allowemptychecksum webpi 
 
     choco install -y git.install
+	
+	choco install -y tortoisesvn
 
     choco install -y  --allowemptychecksum gitextensions
 
     choco install -y poshgit 
-
-    choco install -y --allowemptychecksum windbg 
 
     choco install -y fiddler4
 
@@ -303,23 +366,8 @@ if( $dev )
 
     choco install -y  --allowemptychecksum linqpad4
 
-    choco install -y  --allowemptychecksum redis-64 
-    
-    choco install -y docker-for-windows
-
-    choco install -y cloudfoundry-cli
-
-    choco install -y kubernetes-cli
-
-    choco install -y vagrant
-
     choco install -y nuget.commandline
 
-    choco install -y maven
-
-    choco install -y sbt
-
-    choco install -y ngrok.portable
 
     #
     # Phase #2 Will use the runtimes/tools above to install additional packages
@@ -327,55 +375,16 @@ if( $dev )
 
     RefreshEnv.cmd      # Ships with chocolatey and re-loads environment variables in the current session
 
+	npm install -g jspm
+	
     npm install -g moment
 
     npm install -g bower
 
     npm install -g gulp
 
-    pip install azure
-
-    pip install --user azure-cli
-
     Install-PackageProvider -Name NuGet -MinimumVersion 2.8.5.201 -Force
-
-    Install-Module -Name AzureRM -Force -SkipPublisherCheck 
-
-    Invoke-WebRequest 'https://howtowhale.github.io/dvm/downloads/latest/install.ps1' -UseBasicParsing | Invoke-Expression
-    
-    if($vsVersion -eq "2013") {
-
-        webpicmd /Install /Products:OfficeToolsForVS2013Update1 /AcceptEula
-
-        webpicmd /Install /Products:VWDOrVs2013AzurePack /AcceptEula
-
-        webpicmd /Install /Products:HDInsightVS2013Tools /AcceptEula
-
-        webpicmd /Install /Products:DataFactoryVS2013Tools /AcceptEula
-
-        webpicmd /Install /Products:PythonTools21ForVS2013 /AcceptEula
-
-    }
-
-    if($vsVersion -eq "2015") {
-
-        webpicmd /Install /Products:OfficeToolsForVS2015 /AcceptEula
-
-        webpicmd /Install /Products:VWDOrVs2015AzurePack /AcceptEula
-        
-        webpicmd /Install /Products:VWDOrVs2015AzurePack.2.8 /AcceptEula
-        
-        webpicmd /Install /Products:VWDOrVs2015AzurePack.2.9 /AcceptEula
-
-        webpicmd /Install /Products:HDInsightVS2015Tools /AcceptEula
-
-        webpicmd /Install /Products:DataFactoryVS2015Tools /AcceptEula
-        
-        webpicmd /Install /Products:DataLakeVS2015Msi /AcceptEula
-        
-        webpicmd /Install /Products:HDInsightVS2015Msi /AcceptEula
-    }
-
+	
 }
 
 
@@ -384,14 +393,13 @@ if( $dev )
 #
 if( $data )
 {
-
-    choco install -y sql-server-management-studio
-
+	if ($env:PROCESSOR_ARCHITECTURE = "x86") {
+		choco install -y sql-server-management-studio --version 13.0.16106.4
+	} else {
+		choco install -y sql-server-management-studio
+	}
+	
     choco install -y --allowemptychecksum dbeaver 
-
-    choco install -y --allowemptychecksum SQLite 
-
-    choco install -y --allowemptychecksum sqlite.shell 
 
 }
 
@@ -401,15 +409,15 @@ if( $data )
 #
 if( $dataSrv ) {
     
-    choco install sql-server-express -version 13.0.1601.5
+#    choco install sql-server-express -version 13.0.1601.5
 
-    choco install -y mysql 
+#    choco install -y mysql 
 
-    choco install -y mongodb
+#    choco install -y mongodb
 
-    choco install -y datastax.community
+#    choco install -y datastax.community
 
-    choco install -y neo4j-community -version 2.2.2.20150617
+#    choco install -y neo4j-community -version 2.2.2.20150617
 
 }
 
@@ -417,62 +425,14 @@ if( $dataSrv ) {
 #
 # Visual Studio Extensions
 #
-if( $vsext -and ($vsVersion -eq "2013") ) {
-
-    # Refreshing the environment path variables
-    RefreshEnv.cmd
-
-    # Web Essentials
-    InstallVSExtension -extensionUrl "https://visualstudiogallery.msdn.microsoft.com/56633663-6799-41d7-9df7-0f2a504ca361/file/105627/39/WebEssentials2013.vsix" `
-                       -extensionFileName "WebEssentials2013.vsix" -vsVersion $vsVersion
-    
-    # NuGet Package Manager 2013
-    InstallVSExtension -extensionUrl "https://visualstudiogallery.msdn.microsoft.com/4ec1526c-4a8c-4a84-b702-b21a8f5293ca/file/105933/7/NuGet.Tools.2013.vsix" `
-                       -extensionFileName "NuGet.Tools.2013.vsix" -vsVersion $vsVersion
-
-    # Productivity Power Tools 2013
-    InstallVSExtension -extensionUrl "https://visualstudiogallery.msdn.microsoft.com/dbcb8670-889e-4a54-a226-a48a15e4cace/file/117115/4/ProPowerTools.vsix" `
-                       -extensionFileName "ProPowerTools.vsix" -vsVersion $vsVersion
-
-    # SQLite Toolbox
-    InstallVSExtension -extensionUrl "https://visualstudiogallery.msdn.microsoft.com/0e313dfd-be80-4afb-b5e9-6e74d369f7a1/file/29445/72/SqlCeToolbox.vsix" `
-                       -extensionFileName "SqlCeToolbox.vsix" -vsVersion $vsVersion
-    
-    # Indent Guidelines
-    InstallVSExtension -extensionUrl "https://visualstudiogallery.msdn.microsoft.com/e792686d-542b-474a-8c55-630980e72c30/file/48932/20/IndentGuide%20v14.vsix" `
-                       -extensionFileName "IndentGuide_v14.vsix" -vsVersion $vsVersion
-
-    # VS Color Theme Editor 2013
-    InstallVSExtension -extensionUrl "https://visualstudiogallery.msdn.microsoft.com/9e08e5d3-6eb4-4e73-a045-6ea2a5cbdabe/file/112381/2/ColorThemeEditor.vsix" `
-                       -extensionFileName "ColorThemeEditor.vsix" -vsVersion $vsVersion
-
-    # PowerShell Tools
-    InstallVSExtension -extensionUrl "https://visualstudiogallery.msdn.microsoft.com/c9eb3ba8-0c59-4944-9a62-6eee37294597/file/160501/1/PowerShellTools.vsix" `
-                       -extensionFileName "PowerShellTools.vsix" -vsVersion $vsVersion
-
-    # SQLite for WinRT, Windows 8.1
-    InstallVSExtension -extensionUrl "https://visualstudiogallery.msdn.microsoft.com/1d04f82f-2fe9-4727-a2f9-a2db127ddc9a/file/111148/13/sqlite-winrt81-3080701.vsix" `
-                       -extensionFileName "sqlite-winrt81-3080701.vsix" -vsVersion $vsVersion
-
-    # SQLite for Windows Phone 8.1
-    InstallVSExtension -extensionUrl "https://visualstudiogallery.msdn.microsoft.com/5d97faf6-39e3-4048-a0bc-adde2af75d1b/file/132406/6/sqlite-wp81-winrt-3080701.vsix" `
-                       -extensionFileName "sqlite-wp81-winrt-3080701.vsix" -vsVersion $vsVersion
-
-    # Snippet Designer
-    InstallVSExtension -extensionUrl "https://visualstudiogallery.msdn.microsoft.com/B08B0375-139E-41D7-AF9B-FAEE50F68392/file/5131/9/SnippetDesigner.vsix" `
-                       -extensionFileName "SnippetDesigner.vsix" -vsVersion $vsVersion
-
-    # License Header Manager
-    InstallVSExtension -extensionUrl "https://visualstudiogallery.msdn.microsoft.com/5647a099-77c9-4a49-91c3-94001828e99e/file/51979/5/LicenseHeaderManager.vsix" `
-                       -extensionFileName "LicenseHeaderManager.vsix" -vsVersion $vsVersion
-
-}
 
 if( $vsext -and ($vsVersion -eq "2015") ) {
 
     # Refreshing the environment path variables
     RefreshEnv.cmd
-
+	
+	choco install ankhsvn -y
+	
     # Indent Guides
     # https://visualstudiogallery.msdn.microsoft.com/e792686d-542b-474a-8c55-630980e72c30
     InstallVSExtension -extensionUrl "https://visualstudiogallery.msdn.microsoft.com/e792686d-542b-474a-8c55-630980e72c30/file/48932/20/IndentGuide%20v14.vsix" `
@@ -511,8 +471,8 @@ if( $vsext -and ($vsVersion -eq "2015") ) {
     # Bing Developer Assistant
     # https://visualstudiogallery.msdn.microsoft.com/5d01e3bd-6433-47f2-9c6d-a9da52d172cc
     # Not using it anymore, distracts IntelliSense...
-    InstallVSExtension -extensionUrl "https://visualstudiogallery.msdn.microsoft.com/5d01e3bd-6433-47f2-9c6d-a9da52d172cc/file/150980/8/DeveloperAssistant_2015.vsix" `
-                       -extensionFileName "DevAssistant.vsix" -vsVersion $vsVersion
+#    InstallVSExtension -extensionUrl "https://visualstudiogallery.msdn.microsoft.com/5d01e3bd-6433-47f2-9c6d-a9da52d172cc/file/150980/8/DeveloperAssistant_2015.vsix" `
+#                       -extensionFileName "DevAssistant.vsix" -vsVersion $vsVersion
     
     # RegEx Tester
     # https://visualstudiogallery.msdn.microsoft.com/16b9d664-d88c-460e-84a5-700ab40ba452
@@ -626,7 +586,7 @@ if ( $vscodeext ) {
 
     code --install-extension johnpapa.Angular2
     
-    code --install-extension lukehoban.Go
+    #code --install-extension lukehoban.Go
     
     code --install-extension mohsen1.prettify-json
     
@@ -648,7 +608,7 @@ if ( $vscodeext ) {
 
     code --install-extension ms-vscode.node-debug
     
-    code --install-extension install msazurermtools.azurerm-vscode-tools
+    #code --install-extension install msazurermtools.azurerm-vscode-tools
     
     code --install-extension msjsdiag.debugger-for-chrome
 
@@ -662,15 +622,15 @@ if ( $vscodeext ) {
 
     ##code --install-extension install codezombiech.gitignore
     
-    code --install-extension redhat.java
+    #code --install-extension redhat.java
     
-    code --install-extension vsmobile.cordova-tools
+    #code --install-extension vsmobile.cordova-tools
 
     code --install-extension Angular.ng-template
 
-    code --install-extension sivarajanraju.vs-code-office-ui-fabric
+#    code --install-extension sivarajanraju.vs-code-office-ui-fabric
 
-    code --install-extension knom.office-mailapp-manifestuploader
+    #code --install-extension knom.office-mailapp-manifestuploader
 
 }
 
@@ -680,155 +640,4 @@ if ( $vscodeext ) {
 #
 if( $cloneRepos ) {
 
-    # Refreshing the environment path variables
-    RefreshEnv.cmd
-
-    #
-    # Creating my code directories
-    #    
-    CreatePathIfNotExists -pathName "$codeBaseDir"
-    CreatePathIfNotExists -pathName "$codeBaseDir\github"
-    CreatePathIfNotExists -pathName "$codeBaseDir\codeplex"
-    CreatePathIfNotExists -pathName "$codeBaseDir\mszCool"
-    CreatePathIfNotExists -pathName "$codeBaseDir\marioszp"
-    CreatePathIfNotExists -pathName "$codeBaseDir\dpeted"
-
-    #
-    # Github clone repositories 
-    #
-    CreatePathIfNotExists -pathName "$codeBaseDir\github\mszcool"
-    CreatePathIfNotExists -pathName "$codeBaseDir\github\Azure"
-    CreatePathIfNotExists -pathName "$codeBaseDir\github\AzureAD"
-    CreatePathIfNotExists -pathName "$codeBaseDir\github\JMayrbaeurl"
-    CreatePathIfNotExists -pathName "$codeBaseDir\github\OfficeDev"
-    CreatePathIfNotExists -pathName "$codeBaseDir\github\CloudFoundry"
-    CreatePathIfNotExists -pathName "$codeBaseDir\github\dx"
-    CreatePathIfNotExists -pathName "$codeBaseDir\github\HDInsight"
-    CreatePathIfNotExists -pathName "$codeBaseDir\github\mezmicrosoft-ml"
-    CreatePathIfNotExists -pathName "$codeBaseDir\github\solarized"
-   
-    cd "$codeBaseDir\github\mszcool"
-    git clone https://github.com/mszcool/azure-quickstart-templates.git
-    git clone https://github.com/mszcool/azureAdMultiTenantServicePrincipal.git
-    git clone https://github.com/mszcool/AzureBatchTesseractSample.git
-    git clone https://github.com/mszcool/AzureFiles2014Sample.git
-    git clone https://github.com/mszcool/azureSpBasedInstanceMetadata.git
-    git clone https://github.com/mszcool/bosh-azure-cpi-release.git
-    git clone https://github.com/mszcool/cfMultiCloudSample.git
-    git clone https://github.com/mszcool/devmachinesetup.git
-    git clone https://github.com/mszcool/msgraphcli.git
-    git clone https://github.com/mszcool/mszcoolAzureBillingAddIn.git
-    git clone https://github.com/mszcool/mszcoolPowerOnDemand.git
-    git clone https://github.com/mszcool/NServiceBus.AzureServiceBus-SB1.1-WinSrv.git
-    git clone https://github.com/mszcool/simpleconsolefx.git
-    git clone https://github.com/mszcool/SqlAlwaysOnAzurePowerShellClassic.git
-    git clone https://github.com/mszcool/TrafficManager201501Sample.git
-    git clone https://github.com/mszcool/UniversalApps-Modularity.git
-    
-    cd "$codeBaseDir\github\Azure"
-    git clone https://github.com/Azure/api-management-samples.git
-    git clone https://github.com/Azure/azure-batch-samples.git
-    git clone https://github.com/Azure/Azure-DataFactory.git
-    git clone https://github.com/Azure/Azure-Media-Services-Explorer.git
-    git clone https://github.com/Azure/azure-media-services-samples.git
-    git clone https://github.com/Azure/azure-mobile-apps-quickstarts.git
-    git clone https://github.com/Azure/azure-mobile-engagement-samples.git
-    git clone https://github.com/Azure/azure-mobile-services-quickstarts.git
-    git clone https://github.com/Azure/azure-notificationhubs-samples.git
-    git clone https://github.com/Azure/azure-quickstart-templates.git
-    git clone https://github.com/Azure/azure-resource-manager-schemas.git
-    git clone https://github.com/Azure/azure-service-bus-samples.git
-    git clone https://github.com/Azure/azure-sql-database-samples.git
-    git clone https://github.com/Azure/azure-stream-analytics.git
-    git clone https://github.com/Azure/Azure-vpn-config-samples.git
-    git clone https://github.com/Azure/azure-webjobs-quickstart.git
-    git clone https://github.com/Azure/azure-webjobs-sdk-samples.git
-    git clone https://github.com/Azure/AzureAD-BYOA-Provisioning-Samples.git
-    git clone https://github.com/Azure/AzureQuickStartsProjects.git
-    git clone https://github.com/Azure/BillingCodeSamples.git
-    git clone https://github.com/Azure/elastic-db-tools.git
-    git clone https://github.com/Azure/identity-management-samples.git
-    
-    cd "$codeBaseDir\github\AzureAD"
-    git clone https://github.com/Azure-Samples/active-directory-dotnet-graphapi-console.git
-    git clone https://github.com/Azure-Samples/active-directory-java-graphapi-web.git
-    git clone https://github.com/Azure-Samples/active-directory-angularjs-singlepageapp-dotnet-webapi.git
-    git clone https://github.com/Azure-Samples/active-directory-android.git
-    git clone https://github.com/Azure-Samples/active-directory-dotnet-webapp-webapi-openidconnect-aspnetcore.git
-    git clone https://github.com/Azure-Samples/active-directory-dotnet-webapi-onbehalfof.git
-    git clone https://github.com/Azure-Samples/active-directory-dotnet-native-headless.git
-    git clone https://github.com/Azure-Samples/active-directory-cordova-graphapi.git
-    git clone https://github.com/Azure-Samples/active-directory-dotnet-webapp-webapi-oauth2-useridentity.git
-    git clone https://github.com/Azure-Samples/active-directory-java-native-headless.git
-    git clone https://github.com/Azure-Samples/active-directory-xamarin-native-v2.git
-    git clone https://github.com/Azure-Samples/active-directory-node-webapi.git
-    git clone https://github.com/Azure-Samples/active-directory-python-graphapi-oauth2-0-access.git
-    git clone https://github.com/Azure-Samples/active-directory-dotnet-native-uwp-wam.git
-    git clone https://github.com/Azure-Samples/active-directory-java-webapp-openidconnect.git
-    git clone https://github.com/Azure-Samples/active-directory-dotnet-native-multitarget.git
-    git clone https://github.com/Azure-Samples/active-directory-dotnet-graphapi-diffquery.git
-    git clone https://github.com/Azure-Samples/active-directory-dotnet-webapp-multitenant-openidconnect.git
-    git clone https://github.com/Azure-Samples/active-directory-dotnet-webapp-roleclaims.git
-    git clone https://github.com/Azure-Samples/active-directory-dotnet-web-single-sign-out.git
-    git clone https://github.com/AzureAD/azure-activedirectory-library-for-js.git
-    git clone https://github.com/AzureAD/microsoft-authentication-library-for-dotnet.git
-
-    cd "$codeBaseDir\github\HDInsight"
-    git clone https://github.com/hdinsight/eventhubs-client.git
-    git clone https://github.com/hdinsight/eventhubs-sample-event-producer.git
-    git clone https://github.com/hdinsight/hdinsight-spark-examples.git
-    git clone https://github.com/hdinsight/hdinsight-storm-examples.git
-    git clone https://github.com/hdinsight/spark-streaming-data-persistence-examples.git
-
-    cd "$codeBaseDir\github\CloudFoundry"
-    git clone https://github.com/cloudfoundry-incubator/bosh-azure-cpi-release.git
-    git clone https://github.com/cf-platform-eng/bosh-azure-template.git
-    git clone https://github.com/cloudfoundry/bosh-lite
-
-    cd "$codeBaseDir\github\dx"
-    git clone https://github.com/dx-ted-emea/bigdata-labs.git
-    git clone https://github.com/dx-ted-emea/iot-labs.git
-    git clone https://github.com/MicrosoftDX/AzureLens.git
-    git clone https://github.com/MicrosoftDX/AMSOpsTool.git
-
-    cd "$codeBaseDir\github\OfficeDev"
-    git clone https://github.com/OfficeDev/O365-AspNetMVC-Microsoft-Graph-Connect.git
-    git clone https://github.com/OfficeDev/O365-UWP-Microsoft-Graph-Connect.git
-    git clone https://github.com/OfficeDev/O365-UWP-Microsoft-Graph-Snippets.git
-    git clone https://github.com/OfficeDev/Office-Add-in-Nodejs-ServerAuth.git
-    git clone https://github.com/OfficeDev/CodeLabs-Office.git
-    git clone https://github.com/OfficeDev/Excel-Add-in-Bind-To-Table.git
-    git clone https://github.com/OfficeDev/O365-AspNetMVC-Microsoft-Graph-Connect.git
-    git clone https://github.com/OfficeDev/O365-UWP-Microsoft-Graph-Connect.git
-    git clone https://github.com/OfficeDev/O365-UWP-Microsoft-Graph-Snippets.git
-    git clone https://github.com/OfficeDev/Office-Add-in-Nodejs-ServerAuth.git
-    git clone https://github.com/OfficeDev/office-js-docs.git
-    git clone https://github.com/OfficeDev/PowerPoint-Add-in-Microsoft-Graph-ASPNET-InsertChart.git
-    git clone https://github.com/OfficeDev/Word-Add-in-Angular2-StyleChecker.git
-    git clone https://github.com/OfficeDev/Word-Add-in-AngularJS-Client-OAuth.git
-    git clone https://github.com/mandren/Excel-CustomXMLPart-Demo.git
-    
-    cd "$codeBaseDir\github\JMayrbaeurl"
-    git clone https://github.com/JMayrbaeurl/AbfallkalenderBisamberg.git
-    git clone https://github.com/JMayrbaeurl/azure-log4j.git
-    git clone https://github.com/JMayrbaeurl/GotoZurich2013JavaOnAzureSample.git
-
-    cd "$codeBaseDir\github\mezmicrosoft-ml"
-    git clone https://github.com/mezmicrosoft/Introduction_to_RTVS_toturial.git
-    git clone https://github.com/mezmicrosoft/Microsoft_R_Server.git
-    git clone https://github.com/mezmicrosoft/Sample_Experiments.git
-
-    cd "$codeBaseDir\github\solarized"
-    git clone https://github.com/altercation/solarized.git
-    git clone https://github.com/leddt/visualstudio-colors-solarized.git
-    git clone https://github.com/shanselman/cmd-colors-solarized.git
-    git clone https://github.com/tpenguinltg/windows-solarized.git
-
-    #
-    # Codeplex (legacy stuff)
-    #
-    cd "$codeBaseDir\codeplex"
-    git clone https://git01.codeplex.com/mszcooldemos
-    git clone https://git01.codeplex.com/geres2
-    
 }
