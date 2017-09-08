@@ -30,16 +30,6 @@ Param
 
 
 
-#
-# Simple Parameter validation
-#
-if ( $prepOS -and ($tools -or $ittools -or $userTools -or $dev -or $data -or $dataSrv -or $installOtherIDE -or $installVs -or $cloneRepos -or $vsext) ) {
-    throw "Running the script with -prepOS does not allow you to use any other switches. First run -prepOS and then run with any other allowed combination of switches!"
-}
-
-if ( $dev -and $installVs ) {
-    throw "Visual Studio and developer tools need to be installed separately. First run with -installVs and then run with -dev!"
-}
 
 #
 # Function to create a path if it does not exist
@@ -50,7 +40,7 @@ function CreatePathIfNotExists($pathName) {
     }
 }
 
-function GetStage() {
+function GetStage {
     if (!(Test-Path -Path $stagePath)) {
         return $Script:stage
     } 
@@ -114,6 +104,26 @@ function Test-PendingReboot {
     return $false
 }
 
+function CreateScheduledTask ($scriptPath) {
+    SCHTASKS /Create /TN "Install-WindowsMachine" /SC ONLOGON /TR Powershell.exe /IT /RL HIGHEST /F
+	$doc = [XML] (& SCHTASKS /QUERY /TN "Install-WindowsMachine" /XML)
+	$child = $doc.CreateElement("UserId", $doc.Task.NamespaceURI)
+	$doc.Task.Triggers.LogonTrigger.AppendChild( $child )
+    $doc.Task.Triggers.LogonTrigger.UserId = $doc.Task.Principals.Principal.UserId
+    $child = $doc.CreateElement("Delay", $doc.Task.NamespaceURI)
+    $doc.Task.Triggers.LogonTrigger.AppendChild( $child )
+    $doc.Task.Triggers.LogonTrigger.Delay = "PT30S"
+	$doc.Task.Settings.DisallowStartIfOnBatteries = "false"
+	$doc.Task.Settings.StopIfGoingOnBatteries = "false"
+	$doc.Task.Settings.StartWhenAvailable = "true"
+	$child = $doc.CreateElement("Arguments", $doc.Task.NamespaceURI)
+	$doc.Task.Actions.Exec.AppendChild($child)
+	$doc.Task.Actions.Exec.Arguments = "-ExecutionPolicy Bypass -File `"$scriptPath`""
+	$taskXmlFile = [System.IO.Path]::GetTempFileName()
+	$doc.Save($taskXmlFile)
+	SCHTASKS /Create /TN "Install-WindowsMachine" /XML $taskXmlFile /F 
+}
+
 #
 # Function to install VSIX extensions
 #
@@ -151,11 +161,14 @@ function InstallVSExtension($extensionUrl, $extensionFileName, $vsVersion) {
     Remove-Item $extensionFileName
 }
 
+$AUSettigns = (New-Object -com "Microsoft.Update.AutoUpdate").Settings
+$AUSettigns.NotificationLevel = 1
+$AUSettigns.Save()
 #
 # [Stage0] Installing Operating System Components as well as chocolatey itself. Needs to happen before ANY other runs!
 #
 
-if ( GetStage -eq "Stage0" ) {
+if ( $(GetStage) -eq "Stage0" ) {
     Set-ExecutionPolicy Unrestricted
 
     Invoke-Expression ((new-object net.webclient).DownloadString('https://chocolatey.org/install.ps1'))
@@ -183,10 +196,8 @@ if ( GetStage -eq "Stage0" ) {
         Enable-WindowsOptionalFeature -FeatureName IIS-WindowsAuthentication -Online -All -NoRestart 
         Enable-WindowsOptionalFeature -FeatureName IIS-WebSockets -Online -All -NoRestart
     }
-    
-    $jt = New-JobTrigger -AtLogOn -RandomDelay 00:1:00
-    $sjo = New-ScheduledJobOption -RunElevated -RequireNetwork -StartIfOnBattery -ContinueIfGoingOnBattery
-    Register-ScheduledJob -Trigger $jt -ScheduledJobOption $sjo -FilePath $MyInvocation.MyCommand.Path -Name "Install-WindowsMachine"
+
+    CreateScheduledTask -scriptPath $MyInvocation.MyCommand.Path
     Write-Output "Stage1" > $stagePath
     Restart-Computer
     Exit
@@ -197,44 +208,40 @@ if ( GetStage -eq "Stage0" ) {
 # [Stage1]
 #
 
-if ( GetStage -eq "Stage1" ) {
+if ( $(GetStage) -eq "Stage1" ) {
 
-    if (Test-RebootRequired) {
+    if ($(Test-PendingReboot)) {
         Restart-Computer
         Exit
     }
 
-    choco install -y dotnet4.6.2 PowerShell chocolateygui
+    choco install -y dotnet4.6.2 PowerShell
     
     Write-Output "Stage2" > $stagePath
-
-    if (Test-RebootRequired) {
-        Restart-Computer
-        Exit
-    }
+    Restart-Computer
+    Exit
 }
 
 #
 # [Stage2] Tools needed for PC, IT, and Dev
 #
 
-if ( GetStage -eq "Stage2" ) {
+if ( $(GetStage) -eq "Stage2" ) {
 
-    if (Test-RebootRequired) {
+    if ($(Test-PendingReboot)) {
         Restart-Computer
         Exit
     }
 
-    choco install -y adobereader googlechrome firefox skype 7zip
-    choco install -y visualstudiocode notepadplusplus filezilla keepass fiddler4 agentransack
-    choco install -y  --allowemptychecksum vlc putty
+    choco install -y chocolateygui googlechrome 7zip visualstudiocode agentransack notepadplusplus chocolateygui
+    choco install -y --allowemptychecksum winmerge putty
+#    choco install -y  --allowemptychecksum vlc
+#    choco install -y adobereader firefox skype filezilla keepass fiddler4 nuget.commandline curl sysinternals
     choco install -y reportviewer2012 reportviewer2010sp1
-    choco install -y --allowemptychecksum winmerge
-    choco install -y git tortoisesvn poshgit nuget.commandline curl sysinternals
+    choco install -y git tortoisesvn poshgit nodejs
     choco install -y  --allowemptychecksum webpi gitextensions ilspy linqpad4 jq
-    choco install -y nodejs chocolateygui
 
-    Install-PackageProvider -Name NuGet 
+    Install-PackageProvider -Name NuGet -Force
 
     Write-Output "Stage3" > $stagePath
     Restart-Computer
@@ -244,7 +251,7 @@ if ( GetStage -eq "Stage2" ) {
 #
 # [Stage3] node packages
 #
-if ( GetStage -eq "Stage3" ) {
+if ( $(GetStage) -eq "Stage3" ) {
     
     #
     # Phase #2 Will use the runtimes/tools above to install additional packages
@@ -253,11 +260,8 @@ if ( GetStage -eq "Stage3" ) {
     RefreshEnv.cmd      # Ships with chocolatey and re-loads environment variables in the current session
 
     npm install -g jspm
-	
     npm install -g moment
-
     npm install -g bower
-
     npm install -g gulp
 
     Write-Output "Stage4" > $stagePath
@@ -268,9 +272,9 @@ if ( GetStage -eq "Stage3" ) {
 #
 # [Stage4] Installing a version of Visual Studio (based on Chocolatey)
 #
-if ( GetStage -eq "Stage4" ) {
+if ( $(GetStage) -eq "Stage4" ) {
 
-    if (Test-RebootRequired) {
+    if ($(Test-PendingReboot)) {
         Restart-Computer
         Exit
     }
@@ -313,8 +317,8 @@ if ( GetStage -eq "Stage4" ) {
 #
 # [Stage5] Database Platform Tools
 #
-if ( GetStage -eq "Stage5" ) {
-    if (Test-RebootRequired) {
+if ( $(GetStage) -eq "Stage5" ) {
+    if ($(Test-PendingReboot)) {
         Restart-Computer 
         Exit
     }
@@ -328,7 +332,7 @@ if ( GetStage -eq "Stage5" ) {
     choco install -y --allowemptychecksum dbeaver 
 
     Write-Output "Stage6" > $stagePath
-    if (Test-RebootRequired) {
+    if ($(Test-PendingReboot)) {
         Restart-Computer
         Exit
     }
@@ -338,8 +342,8 @@ if ( GetStage -eq "Stage5" ) {
 # [Stage6] Visual Studio Extensions
 #
 
-if ($GetStage -eq "Stage6") {
-    if (Test-RebootRequired) {
+if ( $(GetStage) -eq "Stage6") {
+    if ($(Test-PendingReboot)) {
         Restart-Computer
         Exit
     }
@@ -480,7 +484,7 @@ if ($GetStage -eq "Stage6") {
 
     }
     Write-Output "Cleanup" > $stagePath
-    if (Test-RebootRequired) {
+    if ($(Test-PendingReboot)) {
         Restart-Computer
         Exit
     }
@@ -489,6 +493,9 @@ if ($GetStage -eq "Stage6") {
 #
 # [Cleanup] Remove the scheduled login job
 #
-if ($GetStage -eq "Cleanup") {
-    Unregister-ScheduledJob "Install-WindowsMachine"
+if ( $(GetStage) -eq "Cleanup") {
+    $AUSettigns = (New-Object -com "Microsoft.Update.AutoUpdate").Settings
+    $AUSettigns.NotificationLevel = 4
+    $AUSettigns.Save()
+    SCHTASKS /Delete /TN "Install-WindowsMachine" /F
 }

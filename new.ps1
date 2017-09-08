@@ -1,5 +1,22 @@
 	
-	
+	$taskCmd = "Powershell.exe -ExecutionPolicy Bypass -File `"$($MyInvocation.MyCommand.Path)`""
+
+	SCHTASKS /Create /TN "Install-WindowsMachine" /SC ONLOGON /TR cmd.exe /IT /RL HIGHEST
+	$doc = [XML] (& SCHTASKS /QUERY /TN "Install-WindowsMachine" /XML)
+	$child = $doc.CreateElement("UserId")
+	$doc.Task.Triggers.LogonTrigger.AppendChild( $child )
+	$doc.Task.Triggers.LogonTrigger.UserId = $task.Task.Principals.Principal.UserId
+	$doc.Task.Settings.DisallowStartIfOnBatteries = "false"
+	$doc.Task.Settings.StopIfGoingOnBatteries = "false"
+	$doc.Task.Settings.StartWhenAvailable = "true"
+	$doc.Task.Actions.Exec.Command = "Powershell.exe"
+	$child = $doc.CreateElement("Arguments")
+	$doc.Task.Actions.Exec.AppendChild($child)
+	$doc.Task.Actions.Exec.Arguments = "-ExecutionPolicy Bypass -File `"$($MyInvocation.MyCommand.Path)`""
+	$taskXmlFile = [System.IO.Path]::GetTempFileName()
+	$doc.Save($taskXmlFile)
+	SCHTASKS /Create /TN "Install-WindowsMachine" /XML $taskXmlFile /F 
+
 	write-output "Stage0" > $env:USERPROFILE\.install_windows_machine.stage
 	
 	
@@ -47,5 +64,4 @@
 	Install-PackageProvider -Name NuGet -MinimumVersion 2.8.5.201 -Force
 	
 	$env:visualStudio:setupFolder = "d:\"
-		
     choco install -y visualstudio2015Professional
